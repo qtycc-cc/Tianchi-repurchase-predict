@@ -204,7 +204,7 @@ def process_data(expose_size: float):
     gc.collect()
     data.to_csv("./data/features.csv", index=False)
 
-def get_best_score(verbose: bool = False):
+def get_best_score():
     data = pd.read_csv(f'./data/features.csv')
     train = data[data["origin"] == "train"].drop(["origin"], axis=1)
     test = data[data["origin"] == "test"].drop(["origin", "label"], axis=1)
@@ -240,8 +240,8 @@ def get_best_score(verbose: bool = False):
         gidx,
         sgidx,
     )
-    if verbose:
-        print(f'Gmi = {gmi}')
+
+    print(f'Gmi = {gmi}')
 
     res = []
     for strategy in ['B', 'M']:
@@ -262,16 +262,15 @@ def get_best_score(verbose: bool = False):
                 pipeline.fit(train_x, train_y)
 
                 auc_lr = roc_auc_score(valid_y, pipeline.predict_proba(valid_x)[:, 1])
-                if verbose:
-                    print(f"s = {s} | strategy = {strategy} | auc_lr = {auc_lr}")
+                print(f"s = {s} | strategy = {strategy} | auc_lr = {auc_lr}")
                 res.append({"s": s, "strategy": strategy, "mu": mu, "auc_lr": auc_lr})
 
     max_auc_item = max(res, key=lambda x: x["auc_lr"])
-    if verbose:
-        print(f"Max AUC is: {max_auc_item['auc_lr']}")
-        print(f"Best s is: {max_auc_item['s']}")
-        print(f"Best strategy is: {max_auc_item['strategy']}")
-        print(f"Best mu is: {max_auc_item['mu']}")
+
+    print(f"Max AUC is: {max_auc_item['auc_lr']}")
+    print(f"Best s is: {max_auc_item['s']}")
+    print(f"Best strategy is: {max_auc_item['strategy']}")
+    print(f"Best mu is: {max_auc_item['mu']}")
 
     return max_auc_item
     # 3/9
