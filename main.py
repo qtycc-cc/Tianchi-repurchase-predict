@@ -392,7 +392,7 @@ def train_with_tabM(use_less_feature: bool = False):
 def main(use_less_feature: bool = False, is_data_saved: bool = False, is_important_features_saved: bool = False, expose_size: float = 3/9):
     if not is_data_saved:
         process_data(expose_size)
-    if not is_important_features_saved:
+    if use_less_feature and not is_important_features_saved:
         max_auc_item = get_best_score()
         print(max_auc_item)
         train_with_IWT(strategy=max_auc_item['strategy'], s=max_auc_item['s'], mu=max_auc_item['mu'])
