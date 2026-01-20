@@ -355,7 +355,8 @@ def HIWT_GSC(
         halt_cond2 = residue < 1e-3
 
         if halt_cond and halt_cond1 and halt_cond2:
-            print(f"Iter {k} reach stop condition in HOMO Loop")
+            if verbose:
+                print(f"Iter {k} reach stop condition in HOMO Loop")
             break
 
         lambda_param = eta * lambda_param

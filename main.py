@@ -2,156 +2,17 @@ import gc
 import torch
 import numpy as np
 import pandas as pd
+from typing import Literal
+from pytabkit import TabM_D_Classifier
 from sklearn.metrics import roc_auc_score
 from sklearn.model_selection import train_test_split
 from sklearn.pipeline import make_pipeline
 from sklearn.preprocessing import StandardScaler
 
-from util import calculate_group_mi
+from util import calculate_group_mi, result_beep
 from model.iwt_classifier import IWT_Classifier
 
-def process_data():
-    data_user_info = pd.read_csv("./data/user_info_format1.csv")
-    data_train = pd.read_csv("./data/train_format1.csv")
-    data_test = pd.read_csv("./data/test_format1.csv")
-    d_types = {'user_id': 'int32', 'item_id': 'int32', 'cat_id': 'int16', 'seller_id': 'int16', 'brand_id': 'float32',
-               'time_stamp': 'int16', 'action_type': 'int8'}
-    data_user_log = pd.read_csv("./data/user_log_format1.csv", dtype=d_types)
-
-    train_main, train_ratio = train_test_split(
-        data_train,
-        test_size=2/9,
-        random_state=42,
-        stratify=data_train['label']
-    )
-    data_train = train_main
-
-    merchant_label_ratio = train_ratio.groupby('merchant_id')['label'] \
-        .mean().reset_index() \
-        .rename(columns={'label': 'merchant_label_ratio'})
-
-    del train_ratio
-    gc.collect()
-
-    data_train["origin"] = "train"
-    data_test["origin"] = "test"
-    data = pd.concat([data_train, data_test], sort=False)
-    data = data.drop(["prob"], axis=1)
-    del data_train, data_test
-    gc.collect()
-
-    list = [data, data_user_log, data_user_info]
-    for df in list:
-        fcols = df.select_dtypes('float').columns
-        icols = df.select_dtypes('integer').columns
-        df[fcols] = df[fcols].apply(pd.to_numeric, downcast='float')
-        df[icols] = df[icols].apply(pd.to_numeric, downcast='integer')
-
-    data_user_log.rename(columns={"seller_id": "merchant_id"}, inplace=True)
-
-    data_user_info["age_range"].fillna(0, inplace=True)
-    data_user_info["gender"].fillna(2, inplace=True)
-    data_user_log["brand_id"].fillna(0, inplace=True)
-
-    # 按user_id分组
-    groups = data_user_log.groupby(["user_id"])
-    # 统计交互总次数
-    temp = groups.size().reset_index().rename(columns={0: "u1"})
-    for df in [data, temp]:
-        df['user_id'] = df['user_id'].astype('int64')
-    data = pd.merge(data, temp, on="user_id", how="left")
-
-    # 统计交互过的商品、品类、品牌、商家数
-    temp = groups[['item_id', 'cat_id', 'merchant_id', 'brand_id']].nunique().reset_index().rename(columns={
-        'item_id': 'u3', 'cat_id': 'u4', 'merchant_id': 'u5', 'brand_id': 'u6'})
-    data = data.merge(temp, on="user_id", how="left")
-
-    # 统计点击、加购物车、购买、收藏的操作次数
-    temp = groups['action_type'].value_counts().unstack().reset_index().rename(
-        columns={0: 'u7', 1: 'u8', 2: 'u9', 3: 'u10'})
-    data = data.merge(temp, on="user_id", how="left")
-
-    # 统计购买点击比
-    data["u11"] = data["u9"] / data["u7"]
-    # 复购率 = 复购过的商家数/购买过的总商家数
-    # 按user_id,merchant_id分组，购买天数>1则复购标记为1，反之为0
-    groups_rb = data_user_log[data_user_log["action_type"] == 2].groupby(["user_id", "merchant_id"])
-    temp_rb = groups_rb.time_stamp.nunique().reset_index().rename(columns={"time_stamp": "n_days"})
-    temp_rb["label_um"] = [(1 if x > 1 else 0) for x in temp_rb["n_days"]]
-
-    # 与data进行匹配
-    temp = temp_rb.groupby(["user_id", "label_um"]).size().unstack(fill_value=0).reset_index()
-    temp["u12"] = temp[1] / (temp[0] + temp[1])
-
-    data = data.merge(temp[["user_id", "u12"]], on="user_id", how="left")
-
-    # 性别、年龄独热编码处理
-    data = data.merge(data_user_info, on="user_id", how="left")
-
-    temp = pd.get_dummies(data["age_range"], prefix="age", dtype=np.int32)
-    temp2 = pd.get_dummies(data["gender"], prefix="gender", dtype=np.int32)
-
-    data = pd.concat([data, temp, temp2], axis=1)
-    data.drop(columns=["age_range", "gender"], inplace=True)
-
-    # 按merchant_id分组
-    groups = data_user_log.groupby(["merchant_id"])
-    # 统计交互总次数
-    temp = groups.size().reset_index().rename(columns={0: "m1"})
-    data = pd.merge(data, temp, on="merchant_id", how="left")
-    # 统计交互天数
-    temp = groups.time_stamp.nunique().reset_index().rename(columns={"time_stamp": "m2"})
-    data = data.merge(temp, on="merchant_id", how="left")
-    # 统计交互过的商品、品类、品牌、用户数
-    temp = groups[['item_id', 'cat_id', 'user_id', 'brand_id']].nunique().reset_index().rename(columns={
-        'item_id': 'm3', 'cat_id': 'm4', 'user_id': 'm5', 'brand_id': 'm6'})
-    data = data.merge(temp, on="merchant_id", how="left")
-
-    # 统计点击、加购物车、购买、收藏的操作次数
-    temp = groups['action_type'].value_counts().unstack().reset_index().rename(
-        columns={0: 'm7', 1: 'm8', 2: 'm9', 3: 'm10'})
-    data = data.merge(temp, on="merchant_id", how="left")
-
-    # 统计购买点击比
-    data["m11"] = data["m9"] / data["m7"]
-    # 复购率 = 复购过的用户数/购买过的总用户数
-    # 按user_id,merchant_id分组，购买天数>1则复购标记为1，反之为0（在上一步已计算）
-    # 与data进行匹配
-    temp = temp_rb.groupby(["merchant_id", "label_um"]).size().unstack(fill_value=0).reset_index()
-    temp["m12"] = temp[1] / (temp[0] + temp[1])
-
-    data = data.merge(temp[["merchant_id", "m12"]], on="merchant_id", how="left")
-
-    # 按user_id,merchant_id分组
-    groups = data_user_log.groupby(['user_id', 'merchant_id'])
-    # 统计交互总次数
-    temp = groups.size().reset_index().rename(columns={0: "um1"})
-    data = pd.merge(data, temp, on=["merchant_id", "user_id"], how="left")
-
-    # 统计交互天数
-    temp = groups.time_stamp.nunique().reset_index().rename(columns={"time_stamp": "um2"})
-    data = data.merge(temp, on=["merchant_id", "user_id"], how="left")
-
-    # 统计交互过的商品、品类、品牌数
-    temp = groups[['item_id', 'cat_id', 'brand_id']].nunique().reset_index().rename(columns={
-        'item_id': 'um3', 'cat_id': 'um4', 'brand_id': 'um5'})
-    data = data.merge(temp, on=["merchant_id", "user_id"], how="left")
-
-    # 统计点击、加购物车、购买、收藏的操作次数
-    temp = groups['action_type'].value_counts().unstack().reset_index().rename(
-        columns={0: 'um6', 1: 'um7', 2: 'um8', 3: 'um9'})
-    data = data.merge(temp, on=["merchant_id", "user_id"], how="left")
-
-    # 统计购买点击比
-    data["um10"] = data["um8"] / data["um6"]
-    data = data.merge(merchant_label_ratio, on='merchant_id', how='left')
-    del merchant_label_ratio, temp, temp2, groups, groups_rb
-    gc.collect()
-
-    data.fillna(0, inplace=True)  # !important
-    data.to_csv("./data/features.csv", index=False)
-
-def process_data_1():
+def process_data(expose_size: float):
     user_log = pd.read_csv('data/user_log_format1.csv')
     user_info = pd.read_csv('data/user_info_format1.csv')
     train = pd.read_csv('data/train_format1.csv')
@@ -165,7 +26,7 @@ def process_data_1():
 
     train_main, train_ratio = train_test_split(
         train,
-        test_size=3 / 9,
+        test_size=expose_size,
         random_state=42,
         stratify=train['label']
     )
@@ -191,8 +52,8 @@ def process_data_1():
     # 性别、年龄独热编码处理
     data = data.merge(user_info, on="user_id", how="left")
 
-    temp = pd.get_dummies(data["age_range"], prefix="age")
-    temp2 = pd.get_dummies(data["gender"], prefix="gender")
+    temp = pd.get_dummies(data["age_range"], prefix="age", dtype='int')
+    temp2 = pd.get_dummies(data["gender"], prefix="gender", dtype='int')
 
     data = pd.concat([data, temp, temp2], axis=1)
     data.drop(columns=["age_range", "gender"], inplace=True)
@@ -341,10 +202,10 @@ def process_data_1():
     data[numerical_cols] = data[numerical_cols].fillna(0)
 
     gc.collect()
-    data.to_csv("./data/features1.csv", index=False)
+    data.to_csv("./data/features.csv", index=False)
 
-def main():
-    data = pd.read_csv("./data/features1.csv")
+def get_best_score(verbose: bool = False):
+    data = pd.read_csv(f'./data/features.csv')
     train = data[data["origin"] == "train"].drop(["origin"], axis=1)
     test = data[data["origin"] == "test"].drop(["origin", "label"], axis=1)
 
@@ -373,23 +234,101 @@ def main():
         idx = torch.where(gidx == kki)[0]
         sgidx.append(idx)
 
-    # gmi = calculate_group_mi(
-    #     torch.tensor(train_x.to_numpy(), dtype=torch.float32, device=device),
-    #     torch.tensor(train_y.to_numpy(), dtype=torch.float32, device=device),
-    #     gidx,
-    #     sgidx,
-    # )
+    gmi = calculate_group_mi(
+        torch.tensor(train_x.to_numpy(), dtype=torch.float32, device=device),
+        torch.tensor(train_y.to_numpy(), dtype=torch.float32, device=device),
+        gidx,
+        sgidx,
+    )
+    if verbose:
+        print(f'Gmi = {gmi}')
+
+    res = []
+    for strategy in ['B', 'M']:
+        for s in range(1, num_groups + 1):
+            for mu in [0.6, 0.65, 0.7, 0.75]:
+                pipeline = make_pipeline(
+                    StandardScaler(), IWT_Classifier(
+                        num_groups=num_groups,
+                        s=s,
+                        gidx=gidx,
+                        strategy=strategy,
+                        mu=mu,
+                        gmi=gmi,
+                        # verbose=True,
+                        # draw_loss=True
+                    )
+                )
+                pipeline.fit(train_x, train_y)
+
+                auc_lr = roc_auc_score(valid_y, pipeline.predict_proba(valid_x)[:, 1])
+                if verbose:
+                    print(f"s = {s} | strategy = {strategy} | auc_lr = {auc_lr}")
+                res.append({"s": s, "strategy": strategy, "mu": mu, "auc_lr": auc_lr})
+
+    max_auc_item = max(res, key=lambda x: x["auc_lr"])
+    if verbose:
+        print(f"Max AUC is: {max_auc_item['auc_lr']}")
+        print(f"Best s is: {max_auc_item['s']}")
+        print(f"Best strategy is: {max_auc_item['strategy']}")
+        print(f"Best mu is: {max_auc_item['mu']}")
+
+    return max_auc_item
+    # 3/9
+    # 0.6838649522004095 44 M 0.65
+    # 0.6839076979581018 40 B
+
+def train_with_IWT(strategy: Literal['B', 'M', 'T', 'H'], s: int, mu: float):
+    data = pd.read_csv(f'./data/features.csv')
+    train = data[data["origin"] == "train"].drop(["origin"], axis=1)
+    test = data[data["origin"] == "test"].drop(["origin", "label"], axis=1)
+
+    X, Y = train.drop(['user_id', 'merchant_id', 'label'], axis=1), train['label']
+
+    train_x, valid_x, train_y, valid_y = train_test_split(
+        X,
+        Y,
+        test_size=0.2,
+        random_state=42,
+        stratify=Y
+    )
+
+    device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+
+    num_groups = train_x.shape[1]
+    num_features = train_x.shape[1]
+    avg_size = round(num_features // num_groups)
+    gidx_list = []
+    for k in range(num_groups):
+        gidx_list.extend([k] * avg_size)
+    gidx_list.extend([num_groups - 1] * (num_features - avg_size * num_groups))
+    gidx = torch.tensor(gidx_list, dtype=torch.long, device=device)
+    sgidx = []
+    for kki in range(num_groups):
+        idx = torch.where(gidx == kki)[0]
+        sgidx.append(idx)
+
+    if strategy == 'M':
+        gmi = calculate_group_mi(
+            torch.tensor(train_x.to_numpy(), dtype=torch.float32, device=device),
+            torch.tensor(train_y.to_numpy(), dtype=torch.float32, device=device),
+            gidx,
+            sgidx,
+        )
+        print(f'Gmi = {gmi}')
+    else:
+        gmi = None
 
     pipeline = make_pipeline(
         StandardScaler(), IWT_Classifier(
             num_groups=num_groups,
-            s=32,
+            s=s,
             gidx=gidx,
-            strategy='B',
-            # mu=0.7,
-            # gmi=gmi,
-            verbose=True,
-            draw_loss=True
+            strategy=strategy,
+            mu=mu,
+            gmi=gmi,
+            # verbose=True,
+            # draw_loss=True
         )
     )
 
@@ -397,8 +336,69 @@ def main():
 
     auc_lr = roc_auc_score(valid_y, pipeline.predict_proba(valid_x)[:, 1])
     print(f'IWT LR roc_auc: {auc_lr}')
-    # 0.6827734596499988 B 32
+
+    # pipeline.fit(X, Y) 会降低分数
+
+    support_w = pipeline.named_steps['iwt_classifier'].w_
+    print(f'W = {support_w}')
+
+    mask = support_w == 0
+    non_zeros = X.iloc[:, mask]
+    non_zeros.to_csv(f'data/non_zeros.csv', index=False)
+    print('non_zeros.csv saved')
+    del non_zeros
+    gc.collect()
+
+def train_with_tabM(use_less_feature: bool = False):
+    data = pd.read_csv(f'./data/features.csv')
+    train = data[data["origin"] == "train"].drop(["origin"], axis=1)
+    test = data[data["origin"] == "test"].drop(["origin", "label"], axis=1)
+
+    X, Y = train.drop(['user_id', 'merchant_id', 'label'], axis=1), train['label']
+    X_test = test.drop(columns=['user_id', 'merchant_id'])
+
+    if use_less_feature:
+        non_zeros = pd.read_csv(f'./data/non_zeros.csv')
+        columns_to_keep = [col for col in non_zeros.columns if col in X.columns]
+        X = X[columns_to_keep]
+        X_test = X_test[columns_to_keep]
+
+    train_x, valid_x, train_y, valid_y = train_test_split(
+        X,
+        Y,
+        test_size=0.2,
+        random_state=42,
+        stratify=Y
+    )
+
+    pipeline = make_pipeline(TabM_D_Classifier(verbosity=2, val_metric_name='1-auc_ovr', allow_amp=True))
+
+    pipeline.fit(train_x, train_y)
+
+    auc_lr = roc_auc_score(valid_y, pipeline.predict_proba(valid_x)[:, 1])
+
+    print(f'TabM roc_auc: {auc_lr}')
+
+    pipeline.fit(X, Y)
+
+    test_pred = pipeline.predict_proba(X_test)[:, 1]
+    submission = test[['user_id', 'merchant_id']].copy()
+    submission['prob'] = test_pred
+    submission.to_csv('data/submission_tabM.csv', index=False)
+    print('Submission csv saved!')
+
+
+@result_beep
+def main(use_less_feature: bool = False, is_data_saved: bool = False, is_important_features_saved: bool = False, expose_size: float = 3/9):
+    if not is_data_saved:
+        process_data(expose_size)
+    if not is_important_features_saved:
+        max_auc_item = get_best_score()
+        print(max_auc_item)
+        train_with_IWT(strategy=max_auc_item['strategy'], s=max_auc_item['s'], mu=max_auc_item['mu'])
+    train_with_tabM(use_less_feature=use_less_feature)
 
 if __name__ == "__main__":
-    # process_data_1()
-    main()
+    # {'s': 40, 'strategy': 'B', 'mu': 0.6, 'auc_lr': 0.6839076979581018} 3/9
+    # {'s': 42, 'strategy': 'B', 'mu': 0.6, 'auc_lr': 0.6790662662970054} 4/9
+    main(use_less_feature=True, is_data_saved=True, is_important_features_saved=False, expose_size=4/9)
