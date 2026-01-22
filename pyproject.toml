@@ -1,5 +1,5 @@
 [project]
-name = "tianchi"
+name = "tianchi-repurchase-predict"
 version = "0.1.0"
 description = "Add your description here"
 requires-python = "==3.13.10"
