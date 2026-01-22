@@ -82,8 +82,8 @@ def process_data(expose_size: float = 1/2):
     # 性别、年龄独热编码处理
     data = data.merge(user_info, on="user_id", how="left")
 
-    temp = pd.get_dummies(data["age_range"], prefix="age")
-    temp2 = pd.get_dummies(data["gender"], prefix="gender")
+    temp = pd.get_dummies(data["age_range"], prefix="age", dtype='int32')
+    temp2 = pd.get_dummies(data["gender"], prefix="gender", dtype='int32')
 
     data = pd.concat([data, temp, temp2], axis=1)
     data.drop(columns=["age_range", "gender"], inplace=True)
@@ -509,15 +509,14 @@ def train_with_tabM(n_cv: int, use_less_feature: bool = False, use_hpo: bool = F
         X_test = X_test[columns_to_keep]
 
     if use_hpo:
-        pipeline = make_pipeline(TabM_HPO_Classifier(verbosity=2, val_metric_name='1-auc_ovr', n_cv=n_cv, hpo_space_name='tabarena', use_caruana_ensembling=True, n_hyperopt_steps=50, tmp_folder='data/tmp'))
+        model = TabM_HPO_Classifier(verbosity=2, val_metric_name='1-auc_ovr', n_cv=n_cv, hpo_space_name='tabarena', use_caruana_ensembling=True, n_hyperopt_steps=50, tmp_folder='data/tmp')
     else:
-        pipeline = make_pipeline(
-            TabM_D_Classifier(verbosity=2, val_metric_name='1-auc_ovr', n_cv=n_cv, tmp_folder='data/tmp'))
+        model = TabM_D_Classifier(verbosity=2, val_metric_name='1-auc_ovr', n_cv=n_cv, tmp_folder='data/tmp')
 
     # fit directly avoid wasting time
-    pipeline.fit(X, Y)
+    model.fit(X, Y, cat_col_names=['age_0.0','age_1.0','age_2.0','age_3.0','age_4.0','age_5.0','age_6.0','age_7.0','age_8.0','gender_0.0','gender_1.0','gender_2.0'])
 
-    test_pred = pipeline.predict_proba(X_test)[:, 1]
+    test_pred = model.predict_proba(X_test)[:, 1]
     submission = test[['user_id', 'merchant_id']].copy()
     submission['prob'] = test_pred
     submission.to_csv('data/submission_tabM.csv', index=False)
