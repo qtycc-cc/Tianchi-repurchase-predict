@@ -131,3 +131,8 @@ train_main, train_ratio = train_test_split(
 merchant_label_ratio = train_ratio.groupby('merchant_id')['label'].mean().reset_index().rename(
         columns={'label': 'merchant_label_ratio'})
 ```
+
+测试
+dropout 0.3
+d_block 256
+性别和年龄分别一组，其他照旧

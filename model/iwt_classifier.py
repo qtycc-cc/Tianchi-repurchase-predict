@@ -292,6 +292,7 @@ def HIWT_GSC(
         s: int,
         gidx: torch.Tensor,
         *,
+        equalsize: bool = True,
         sgidx: torch.Tensor | None = None,
         verbose: bool = False,
         draw_loss: bool = False,
@@ -342,7 +343,8 @@ def HIWT_GSC(
                                         tol_x=tol_x,
                                         strategy=strategy,
                                         mu=mu,
-                                        gmi=gmi)
+                                        gmi=gmi,
+                                        equalsize=equalsize)
         loss_history.extend(iwt_logger.loss_history)
         x = iwt_logger.x
         w = iwt_logger.w
@@ -379,7 +381,8 @@ class IWT_Classifier(ClassifierMixin, BaseEstimator):
         "s": [int],
         "gidx": [torch.Tensor],
         "strategy": [str],
-        "sgidx": [torch.Tensor, type(None)],
+        "equalsize": [bool],
+        "sgidx": [list, type(None)],
         "mu": [float],
         "gmi": [torch.Tensor, type(None)],
         "verbose": [bool],
@@ -393,7 +396,8 @@ class IWT_Classifier(ClassifierMixin, BaseEstimator):
             gidx: torch.Tensor,
             strategy: Literal['B', 'T', 'H', 'M'],
             *,
-            sgidx: torch.Tensor = None,
+            equalsize: bool = True,
+            sgidx: List[torch.Tensor] = None,
             mu: float = 0.5,
             gmi: torch.Tensor = None,
             verbose: bool = False,
@@ -405,6 +409,7 @@ class IWT_Classifier(ClassifierMixin, BaseEstimator):
         self.s = s
         self.gidx = gidx
         self.strategy = strategy
+        self.equalsize = equalsize
         self.sgidx = sgidx
         self.mu = mu
         self.gmi = gmi
@@ -429,6 +434,7 @@ class IWT_Classifier(ClassifierMixin, BaseEstimator):
             self.num_groups,
             self.s,
             self.gidx,
+            equalsize=self.equalsize,
             sgidx=self.sgidx,
             app='LR',
             strategy=self.strategy,

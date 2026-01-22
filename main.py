@@ -3,7 +3,7 @@ import torch
 import numpy as np
 import pandas as pd
 from typing import Literal
-from pytabkit import TabM_D_Classifier
+from pytabkit import TabM_D_Classifier, TabM_HPO_Classifier
 from sklearn.metrics import roc_auc_score
 from sklearn.model_selection import train_test_split
 from sklearn.pipeline import make_pipeline
@@ -12,7 +12,7 @@ from sklearn.preprocessing import StandardScaler
 from util import calculate_group_mi, result_beep
 from model.iwt_classifier import IWT_Classifier
 
-def process_data(expose_size: float):
+def process_data(expose_size: float = 1/2):
     user_log = pd.read_csv('data/user_log_format1.csv')
     user_info = pd.read_csv('data/user_info_format1.csv')
     train = pd.read_csv('data/train_format1.csv')
@@ -46,14 +46,44 @@ def process_data(expose_size: float):
         columns={'label': 'merchant_label_ratio'})
     data = data.merge(merchant_label_ratio, on='merchant_id', how='left')
 
-    del train_ratio, merchant_label_ratio
+    item_label_ratio_max = pd.merge(user_log[(user_log['action_type'] == 2)], train_ratio,
+                                    how='inner').drop_duplicates()
+    item_label_ratio_mean = item_label_ratio_max.groupby(['item_id'])['label'].mean().reset_index().rename(
+        columns={'label': 'item_label_ratio'})
+    item_label_ratio_max = pd.merge(item_label_ratio_max, item_label_ratio_mean, how='left')
+    del item_label_ratio_mean
+    gc.collect()
+    item_label_ratio_max = item_label_ratio_max.groupby(['merchant_id'])['item_label_ratio'].max().reset_index()
+
+    cat_label_ratio_max = pd.merge(user_log[(user_log['action_type'] == 2)], train_ratio, how='inner').drop_duplicates()
+    cat_label_ratio_mean = cat_label_ratio_max.groupby(['cat_id'])['label'].mean().reset_index().rename(
+        columns={'label': 'cat_label_ratio'})
+    cat_label_ratio_max = pd.merge(cat_label_ratio_max, cat_label_ratio_mean, how='inner')
+    del cat_label_ratio_mean
+    gc.collect()
+    cat_label_ratio_max = cat_label_ratio_max.groupby(['merchant_id'])['cat_label_ratio'].max().reset_index()
+
+    brand_label_ratio_max = pd.merge(user_log[(user_log['action_type'] == 2)], train_ratio,
+                                     how='inner').drop_duplicates().dropna()
+    brand_label_ratio_mean = brand_label_ratio_max.groupby(['brand_id'])['label'].mean().reset_index().rename(
+        columns={'label': 'brand_label_ratio'})
+    brand_label_ratio_max = pd.merge(brand_label_ratio_max, brand_label_ratio_mean, how='left')
+    del brand_label_ratio_mean
+    gc.collect()
+    brand_label_ratio_max = brand_label_ratio_max.groupby(['merchant_id'])['brand_label_ratio'].max().reset_index()
+
+    data = data.merge(item_label_ratio_max, on='merchant_id', how='left')
+    data = data.merge(cat_label_ratio_max, on='merchant_id', how='left')
+    data = data.merge(brand_label_ratio_max, on='merchant_id', how='left')
+
+    del train_ratio, merchant_label_ratio, item_label_ratio_max, cat_label_ratio_max, brand_label_ratio_max
     gc.collect()
 
     # 性别、年龄独热编码处理
     data = data.merge(user_info, on="user_id", how="left")
 
-    temp = pd.get_dummies(data["age_range"], prefix="age", dtype='int')
-    temp2 = pd.get_dummies(data["gender"], prefix="gender", dtype='int')
+    temp = pd.get_dummies(data["age_range"], prefix="age")
+    temp2 = pd.get_dummies(data["gender"], prefix="gender")
 
     data = pd.concat([data, temp, temp2], axis=1)
     data.drop(columns=["age_range", "gender"], inplace=True)
@@ -204,7 +234,7 @@ def process_data(expose_size: float):
     gc.collect()
     data.to_csv("./data/features.csv", index=False)
 
-def get_best_score():
+def get_best_score(equalsize: bool = True):
     data = pd.read_csv(f'./data/features.csv')
     train = data[data["origin"] == "train"].drop(["origin"], axis=1)
     test = data[data["origin"] == "test"].drop(["origin", "label"], axis=1)
@@ -221,40 +251,99 @@ def get_best_score():
 
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
 
-    num_groups = train_x.shape[1]
-    num_features = train_x.shape[1]
-    avg_size = round(num_features // num_groups)
-    gidx_list = []
-    for k in range(num_groups):
-        gidx_list.extend([k] * avg_size)
-    gidx_list.extend([num_groups - 1] * (num_features - avg_size * num_groups))
-    gidx = torch.tensor(gidx_list, dtype=torch.long, device=device)
-    sgidx = []
-    for kki in range(num_groups):
-        idx = torch.where(gidx == kki)[0]
-        sgidx.append(idx)
+    if equalsize:
+        num_groups = train_x.shape[1]
+        num_features = train_x.shape[1]
+        avg_size = round(num_features // num_groups)
+        gidx_list = []
+        for k in range(num_groups):
+            gidx_list.extend([k] * avg_size)
+        gidx_list.extend([num_groups - 1] * (num_features - avg_size * num_groups))
+        gidx = torch.tensor(gidx_list, dtype=torch.long, device=device)
+        sgidx = []
+        for kki in range(num_groups):
+            idx = torch.where(gidx == kki)[0]
+            sgidx.append(idx)
+    else:
+        feature_names = X.columns.tolist()
+
+        num_groups = train_x.shape[1]
+        num_features = train_x.shape[1]
+        # 先找出性别和年龄特征的索引
+        age_indices = [i for i, name in enumerate(feature_names) if name.startswith('age_')]
+        gender_indices = [i for i, name in enumerate(feature_names) if name.startswith('gender_')]
+
+        # 剩余的特征索引（除去性别和年龄）
+        remaining_indices = [i for i in range(num_features) if i not in age_indices + gender_indices]
+
+        # 现在重新计算分组
+        # 性别为1组，年龄为1组，剩余的特征按平均分组
+        num_remaining_groups = num_groups - 2  # 减去性别和年龄两个特殊分组
+
+        # 对剩余的特征进行平均分组
+        num_remaining_features = len(remaining_indices)
+        avg_size = num_remaining_features // num_remaining_groups if num_remaining_groups > 0 else 0
+
+        # 创建分组索引列表
+        gidx_list = [0] * num_features
+
+        # 1. 将年龄特征设为第0组
+        for idx in age_indices:
+            gidx_list[idx] = 0
+
+        # 2. 将性别特征设为第1组
+        for idx in gender_indices:
+            gidx_list[idx] = 1
+
+        # 3. 将剩余特征平均分配到其他组
+        group_counter = 2  # 从第2组开始
+        current_size = 0
+
+        for idx in remaining_indices:
+            gidx_list[idx] = group_counter
+            current_size += 1
+
+            # 如果当前组已满，且不是最后一组，则换到下一组
+            if current_size >= avg_size and group_counter < num_groups - 1:
+                group_counter += 1
+                current_size = 0
+
+        # 创建分组索引张量
+        gidx = torch.tensor(gidx_list, dtype=torch.long, device=device)
+
+        # 创建子组索引列表
+        sgidx = []
+        unique_groups = sorted(set(gidx_list))
+        for group_id in unique_groups:
+            idx = torch.where(gidx == group_id)[0]
+            sgidx.append(idx)
 
     gmi = calculate_group_mi(
         torch.tensor(train_x.to_numpy(), dtype=torch.float32, device=device),
         torch.tensor(train_y.to_numpy(), dtype=torch.float32, device=device),
         gidx,
         sgidx,
+        equalsize
     )
 
     print(f'Gmi = {gmi}')
 
     res = []
     for strategy in ['B', 'M']:
-        for s in range(1, num_groups + 1):
-            for mu in [0.6, 0.65, 0.7, 0.75]:
+        for s in range(10, num_groups + 1):
+            cnt = 0
+            for mu in [0.0, 0.05, 0.1, 0.15, 0.2, 0.25, 0.3, 0.35, 0.4, 0.45, 0.5, 0.55, 0.6, 0.65, 0.7, 0.75, 0.8, 0.85, 0.9, 0.95, 1.00]:
+                cnt = cnt + 1
                 pipeline = make_pipeline(
                     StandardScaler(), IWT_Classifier(
-                        num_groups=num_groups,
+                        num_groups=len(sgidx),
                         s=s,
                         gidx=gidx,
+                        sgidx=sgidx,
                         strategy=strategy,
                         mu=mu,
                         gmi=gmi,
+                        equalsize=equalsize,
                         # verbose=True,
                         # draw_loss=True
                     )
@@ -265,6 +354,9 @@ def get_best_score():
                 print(f"s = {s} | strategy = {strategy} | auc_lr = {auc_lr}")
                 res.append({"s": s, "strategy": strategy, "mu": mu, "auc_lr": auc_lr})
 
+                if strategy == 'B' and cnt == 1: # B 策略提前终止
+                    break
+
     max_auc_item = max(res, key=lambda x: x["auc_lr"])
 
     print(f"Max AUC is: {max_auc_item['auc_lr']}")
@@ -273,11 +365,8 @@ def get_best_score():
     print(f"Best mu is: {max_auc_item['mu']}")
 
     return max_auc_item
-    # 3/9
-    # 0.6838649522004095 44 M 0.65
-    # 0.6839076979581018 40 B
 
-def train_with_IWT(strategy: Literal['B', 'M', 'T', 'H'], s: int, mu: float):
+def train_with_IWT(strategy: Literal['B', 'M', 'T', 'H'], s: int, mu: float, equalsize: bool = True):
     data = pd.read_csv(f'./data/features.csv')
     train = data[data["origin"] == "train"].drop(["origin"], axis=1)
     test = data[data["origin"] == "test"].drop(["origin", "label"], axis=1)
@@ -294,18 +383,72 @@ def train_with_IWT(strategy: Literal['B', 'M', 'T', 'H'], s: int, mu: float):
 
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
 
-    num_groups = train_x.shape[1]
-    num_features = train_x.shape[1]
-    avg_size = round(num_features // num_groups)
-    gidx_list = []
-    for k in range(num_groups):
-        gidx_list.extend([k] * avg_size)
-    gidx_list.extend([num_groups - 1] * (num_features - avg_size * num_groups))
-    gidx = torch.tensor(gidx_list, dtype=torch.long, device=device)
-    sgidx = []
-    for kki in range(num_groups):
-        idx = torch.where(gidx == kki)[0]
-        sgidx.append(idx)
+    if equalsize:
+        num_groups = train_x.shape[1]
+        num_features = train_x.shape[1]
+        avg_size = round(num_features // num_groups)
+        gidx_list = []
+        for k in range(num_groups):
+            gidx_list.extend([k] * avg_size)
+        gidx_list.extend([num_groups - 1] * (num_features - avg_size * num_groups))
+        gidx = torch.tensor(gidx_list, dtype=torch.long, device=device)
+        sgidx = []
+        for kki in range(num_groups):
+            idx = torch.where(gidx == kki)[0]
+            sgidx.append(idx)
+    else:
+        feature_names = X.columns.tolist()
+
+        num_groups = train_x.shape[1]
+        num_features = train_x.shape[1]
+        # 先找出性别和年龄特征的索引
+        age_indices = [i for i, name in enumerate(feature_names) if name.startswith('age_')]
+        gender_indices = [i for i, name in enumerate(feature_names) if name.startswith('gender_')]
+
+        # 剩余的特征索引（除去性别和年龄）
+        remaining_indices = [i for i in range(num_features) if i not in age_indices + gender_indices]
+
+        # 现在重新计算分组
+        # 性别为1组，年龄为1组，剩余的特征按平均分组
+        num_remaining_groups = num_groups - 2  # 减去性别和年龄两个特殊分组
+
+        # 对剩余的特征进行平均分组
+        num_remaining_features = len(remaining_indices)
+        avg_size = num_remaining_features // num_remaining_groups if num_remaining_groups > 0 else 0
+
+        # 创建分组索引列表
+        gidx_list = [0] * num_features
+
+        # 1. 将年龄特征设为第0组
+        for idx in age_indices:
+            gidx_list[idx] = 0
+
+        # 2. 将性别特征设为第1组
+        for idx in gender_indices:
+            gidx_list[idx] = 1
+
+        # 3. 将剩余特征平均分配到其他组
+        group_counter = 2  # 从第2组开始
+        current_size = 0
+
+        for idx in remaining_indices:
+            gidx_list[idx] = group_counter
+            current_size += 1
+
+            # 如果当前组已满，且不是最后一组，则换到下一组
+            if current_size >= avg_size and group_counter < num_groups - 1:
+                group_counter += 1
+                current_size = 0
+
+        # 创建分组索引张量
+        gidx = torch.tensor(gidx_list, dtype=torch.long, device=device)
+
+        # 创建子组索引列表
+        sgidx = []
+        unique_groups = sorted(set(gidx_list))
+        for group_id in unique_groups:
+            idx = torch.where(gidx == group_id)[0]
+            sgidx.append(idx)
 
     if strategy == 'M':
         gmi = calculate_group_mi(
@@ -313,6 +456,7 @@ def train_with_IWT(strategy: Literal['B', 'M', 'T', 'H'], s: int, mu: float):
             torch.tensor(train_y.to_numpy(), dtype=torch.float32, device=device),
             gidx,
             sgidx,
+            equalsize
         )
         print(f'Gmi = {gmi}')
     else:
@@ -320,12 +464,14 @@ def train_with_IWT(strategy: Literal['B', 'M', 'T', 'H'], s: int, mu: float):
 
     pipeline = make_pipeline(
         StandardScaler(), IWT_Classifier(
-            num_groups=num_groups,
+            num_groups=len(sgidx),
             s=s,
             gidx=gidx,
+            sgidx=sgidx,
             strategy=strategy,
             mu=mu,
             gmi=gmi,
+            equalsize=equalsize,
             # verbose=True,
             # draw_loss=True
         )
@@ -348,7 +494,7 @@ def train_with_IWT(strategy: Literal['B', 'M', 'T', 'H'], s: int, mu: float):
     del non_zeros
     gc.collect()
 
-def train_with_tabM(use_less_feature: bool = False):
+def train_with_tabM(n_cv: int, use_less_feature: bool = False, use_hpo: bool = False):
     data = pd.read_csv(f'./data/features.csv')
     train = data[data["origin"] == "train"].drop(["origin"], axis=1)
     test = data[data["origin"] == "test"].drop(["origin", "label"], axis=1)
@@ -362,22 +508,13 @@ def train_with_tabM(use_less_feature: bool = False):
         X = X[columns_to_keep]
         X_test = X_test[columns_to_keep]
 
-    train_x, valid_x, train_y, valid_y = train_test_split(
-        X,
-        Y,
-        test_size=0.2,
-        random_state=42,
-        stratify=Y
-    )
+    if use_hpo:
+        pipeline = make_pipeline(TabM_HPO_Classifier(verbosity=2, val_metric_name='1-auc_ovr', n_cv=n_cv, hpo_space_name='tabarena', use_caruana_ensembling=True, n_hyperopt_steps=50, tmp_folder='data/tmp'))
+    else:
+        pipeline = make_pipeline(
+            TabM_D_Classifier(verbosity=2, val_metric_name='1-auc_ovr', n_cv=n_cv, tmp_folder='data/tmp'))
 
-    pipeline = make_pipeline(TabM_D_Classifier(verbosity=2, val_metric_name='1-auc_ovr', allow_amp=True))
-
-    pipeline.fit(train_x, train_y)
-
-    auc_lr = roc_auc_score(valid_y, pipeline.predict_proba(valid_x)[:, 1])
-
-    print(f'TabM roc_auc: {auc_lr}')
-
+    # fit directly avoid wasting time
     pipeline.fit(X, Y)
 
     test_pred = pipeline.predict_proba(X_test)[:, 1]
@@ -388,16 +525,37 @@ def train_with_tabM(use_less_feature: bool = False):
 
 
 @result_beep
-def main(use_less_feature: bool = False, is_data_saved: bool = False, is_important_features_saved: bool = False, expose_size: float = 3/9):
+def main(
+        n_cv:int,
+        use_less_feature: bool = False,
+        use_hpo: bool = False,
+        is_data_saved: bool = False,
+        is_important_features_saved: bool = False,
+        expose_size: float = 1/2,
+        equalsize: bool = True,
+) -> None:
+    """
+
+    :param n_cv: tabM 交叉验证次数
+    :param use_less_feature: tabM是否使用关键特征
+    :param use_hpo: 是否使用参数搜索，注意此处用的是tabM-mini
+    :param is_data_saved: 特征数据是否保存，若未保存，执行特征提取
+    :param is_important_features_saved: 关键特征是否保存，若未保存，执行IWT筛选关键特征
+    :param expose_size: 选取训练集多少用于计算商家覆盖率
+    :param equalsize: IWT是否退化为单一稀疏而不是组稀疏
+    :return:
+    """
     if not is_data_saved:
         process_data(expose_size)
     if use_less_feature and not is_important_features_saved:
-        max_auc_item = get_best_score()
-        print(max_auc_item)
-        train_with_IWT(strategy=max_auc_item['strategy'], s=max_auc_item['s'], mu=max_auc_item['mu'])
-    train_with_tabM(use_less_feature=use_less_feature)
+        train_with_IWT(strategy='M', s=52, mu=0.85, equalsize=equalsize)
+        # train_with_IWT(strategy='B', s=39, mu=0.85, equalsize=equalsize)
+    train_with_tabM(n_cv=n_cv, use_less_feature=use_less_feature, use_hpo=use_hpo)
+
+@result_beep
+def test():
+    max_auc_item = get_best_score()
+    print(max_auc_item)
 
 if __name__ == "__main__":
-    # {'s': 40, 'strategy': 'B', 'mu': 0.6, 'auc_lr': 0.6839076979581018} 3/9
-    # {'s': 42, 'strategy': 'B', 'mu': 0.6, 'auc_lr': 0.6790662662970054} 4/9
-    main(use_less_feature=True, is_data_saved=True, is_important_features_saved=False, expose_size=4/9)
+    main(n_cv=8, use_less_feature=True, use_hpo=False, is_data_saved=True, is_important_features_saved=False, equalsize=True)
