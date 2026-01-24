@@ -511,7 +511,7 @@ def train_with_tabM(n_cv: int, use_less_feature: bool = False, use_hpo: bool = F
     if use_hpo:
         model = TabM_HPO_Classifier(verbosity=2, val_metric_name='1-auc_ovr', n_cv=n_cv, hpo_space_name='tabarena', use_caruana_ensembling=True, n_hyperopt_steps=50, tmp_folder='data/tmp')
     else:
-        model = TabM_D_Classifier(verbosity=2, val_metric_name='1-auc_ovr', n_cv=n_cv, tmp_folder='data/tmp')
+        model = TabM_D_Classifier(verbosity=2, val_metric_name='1-auc_ovr', n_cv=n_cv, tmp_folder='data/tmp', dropout=0.0, random_state=47)
 
     # fit directly avoid wasting time
     model.fit(X, Y, cat_col_names=['age_0.0','age_1.0','age_2.0','age_3.0','age_4.0','age_5.0','age_6.0','age_7.0','age_8.0','gender_0.0','gender_1.0','gender_2.0'])
@@ -557,4 +557,4 @@ def test():
     print(max_auc_item)
 
 if __name__ == "__main__":
-    main(n_cv=8, use_less_feature=True, use_hpo=False, is_data_saved=True, is_important_features_saved=False, equalsize=True)
+    main(n_cv=10, use_less_feature=False, use_hpo=False, is_data_saved=True, is_important_features_saved=False, equalsize=True)
