@@ -32,7 +32,7 @@ def IWT_GSC(
         num_groups: int,
         s: int,
         gidx: torch.Tensor,
-        sgidx: torch.Tensor,
+        sgidx: List[torch.Tensor],
         *,
         verbose: bool = False,
         app: Literal['LS', 'LR'] = 'LS',
@@ -48,7 +48,7 @@ def IWT_GSC(
         strategy: Literal['B', 'T', 'H', 'M'] = 'B',
         gamma: float = 0.7,
         mu: float = 0.5,
-        gmi: torch.Tensor = None,
+        gmi: torch.Tensor | None = None,
 ) -> IWTLogger:
 
     device = x.device
@@ -293,7 +293,7 @@ def HIWT_GSC(
         gidx: torch.Tensor,
         *,
         equalsize: bool = True,
-        sgidx: torch.Tensor | None = None,
+        sgidx: List[torch.Tensor] | None = None,
         verbose: bool = False,
         draw_loss: bool = False,
         num_stages: int = 5000,
@@ -397,9 +397,9 @@ class IWT_Classifier(ClassifierMixin, BaseEstimator):
             strategy: Literal['B', 'T', 'H', 'M'],
             *,
             equalsize: bool = True,
-            sgidx: List[torch.Tensor] = None,
+            sgidx: List[torch.Tensor] | None = None,
             mu: float = 0.5,
-            gmi: torch.Tensor = None,
+            gmi: torch.Tensor | None = None,
             verbose: bool = False,
             draw_loss: bool = False,
     ):
