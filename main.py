@@ -10,7 +10,8 @@ from sklearn.pipeline import make_pipeline
 from sklearn.preprocessing import StandardScaler
 
 from util import calculate_group_mi, result_beep
-from model.iwt_classifier import IWT_Classifier
+from model import IWT_Classifier
+from model import My_TabM_HPO_Classifier
 
 def process_data(expose_size: float = 1/2):
     user_log = pd.read_csv('data/user_log_format1.csv')
@@ -494,7 +495,7 @@ def train_with_IWT(strategy: Literal['B', 'M', 'T', 'H'], s: int, mu: float, equ
     del non_zeros
     gc.collect()
 
-def train_with_tabM(n_cv: int, use_less_feature: bool = False, use_hpo: bool = False):
+def train_with_tabM(n_cv: int, n_hyperopt_steps: int, use_less_feature: bool = False, use_hpo: bool = False, is_hpo_mini: bool = True):
     data = pd.read_csv(f'./data/features.csv')
     train = data[data["origin"] == "train"].drop(["origin"], axis=1)
     test = data[data["origin"] == "test"].drop(["origin", "label"], axis=1)
@@ -509,9 +510,26 @@ def train_with_tabM(n_cv: int, use_less_feature: bool = False, use_hpo: bool = F
         X_test = X_test[columns_to_keep]
 
     if use_hpo:
-        model = TabM_HPO_Classifier(verbosity=2, val_metric_name='1-auc_ovr', n_cv=n_cv, hpo_space_name='tabarena', use_caruana_ensembling=True, n_hyperopt_steps=50, tmp_folder='data/tmp')
+        if is_hpo_mini:
+            model = TabM_HPO_Classifier(verbosity=2, val_metric_name='1-auc_ovr', n_cv=n_cv, hpo_space_name='tabarena', use_caruana_ensembling=True, n_hyperopt_steps=n_hyperopt_steps, tmp_folder='data/tmp')
+        else:
+            model = My_TabM_HPO_Classifier(verbosity=2, val_metric_name='1-auc_ovr', n_cv=n_cv, hpo_space_name='tabarena', use_caruana_ensembling=True, n_hyperopt_steps=n_hyperopt_steps, tmp_folder='data/tmp')
     else:
-        model = TabM_D_Classifier(verbosity=2, val_metric_name='1-auc_ovr', n_cv=n_cv, tmp_folder='data/tmp', dropout=0.0, random_state=47)
+        # 目前最优解
+        model = TabM_D_Classifier(
+            n_cv=n_cv,
+            random_state=47,
+            verbosity=2,
+            val_metric_name='1-auc_ovr',
+            arch_type='tabm-mini',
+            dropout=0.0,
+            lr=0.0001334456483981059,
+            weight_decay=0.012340787659576354,
+            n_blocks=5,
+            d_block=912,
+            num_emb_type='pwl',
+            d_embedding=32,
+            num_emb_n_bins=2)
 
     # fit directly avoid wasting time
     model.fit(X, Y, cat_col_names=['age_0.0','age_1.0','age_2.0','age_3.0','age_4.0','age_5.0','age_6.0','age_7.0','age_8.0','gender_0.0','gender_1.0','gender_2.0'])
@@ -526,8 +544,10 @@ def train_with_tabM(n_cv: int, use_less_feature: bool = False, use_hpo: bool = F
 @result_beep
 def main(
         n_cv:int,
+        n_hyperopt_steps: int,
         use_less_feature: bool = False,
         use_hpo: bool = False,
+        is_hpo_mini: bool = True,
         is_data_saved: bool = False,
         is_important_features_saved: bool = False,
         expose_size: float = 1/2,
@@ -536,10 +556,12 @@ def main(
     """
 
     :param n_cv: tabM 交叉验证次数
+    :param n_hyperopt_steps: 参数搜索次数
     :param use_less_feature: tabM是否使用关键特征
-    :param use_hpo: 是否使用参数搜索，注意此处用的是tabM-mini
+    :param use_hpo: 是否使用参数搜索
+    :param is_hpo_mini: hpo时,被模型是否是tab-mini
     :param is_data_saved: 特征数据是否保存，若未保存，执行特征提取
-    :param is_important_features_saved: 关键特征是否保存，若未保存，执行IWT筛选关键特征
+    :param is_important_features_saved: 关键特征是否保存,若未保存,执行IWT筛选关键特征
     :param expose_size: 选取训练集多少用于计算商家覆盖率
     :param equalsize: IWT是否退化为单一稀疏而不是组稀疏
     :return:
@@ -547,9 +569,9 @@ def main(
     if not is_data_saved:
         process_data(expose_size)
     if use_less_feature and not is_important_features_saved:
-        train_with_IWT(strategy='M', s=52, mu=0.85, equalsize=equalsize)
-        # train_with_IWT(strategy='B', s=39, mu=0.85, equalsize=equalsize)
-    train_with_tabM(n_cv=n_cv, use_less_feature=use_less_feature, use_hpo=use_hpo)
+        # train_with_IWT(strategy='M', s=52, mu=0.85, equalsize=equalsize)
+        train_with_IWT(strategy='B', s=40, mu=0.85, equalsize=equalsize)
+    train_with_tabM(n_cv=n_cv, n_hyperopt_steps=n_hyperopt_steps, use_less_feature=use_less_feature, use_hpo=use_hpo, is_hpo_mini=is_hpo_mini)
 
 @result_beep
 def test():
@@ -557,4 +579,4 @@ def test():
     print(max_auc_item)
 
 if __name__ == "__main__":
-    main(n_cv=10, use_less_feature=False, use_hpo=False, is_data_saved=True, is_important_features_saved=False, equalsize=True)
+    main(n_cv=5, n_hyperopt_steps=10, use_less_feature=False, use_hpo=True, is_hpo_mini=False, is_data_saved=True, is_important_features_saved=False, equalsize=False)

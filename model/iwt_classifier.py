@@ -5,9 +5,8 @@ from typing import Callable, Tuple, Literal, List, Optional
 from sklearn.base import ClassifierMixin, BaseEstimator, _fit_context
 from sklearn.utils.multiclass import check_classification_targets
 from sklearn.utils.validation import check_is_fitted
-from torch.types import Number
 
-from model.helper import get_Rx, grouped_value, draw_loss_history, my_logistic
+from .helper import get_Rx, grouped_value, draw_loss_history, my_logistic
 
 class IWTLogger:
     def __init__(self):
@@ -16,7 +15,7 @@ class IWTLogger:
         self.T: List[int] = []
         self.g: Optional[torch.Tensor] = None
         self.tau: float = -math.inf
-        self.loss_history: List[Number] = []
+        self.loss_history: List[torch.types.Number] = []
 
 class HOMOLogger:
     def __init__(self):
